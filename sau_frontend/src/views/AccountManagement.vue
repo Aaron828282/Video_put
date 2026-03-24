@@ -391,6 +391,7 @@
         
         <!-- 二维码显示区域 -->
         <div v-if="sseConnecting" class="qrcode-container">
+          <p v-if="currentStatusText" class="current-status">{{ currentStatusText }}</p>
           <div v-if="qrCodeData && !loginStatus" class="qrcode-wrapper">
             <p class="qrcode-tip">请使用对应平台APP扫描二维码登录</p>
             <img :src="qrCodeData" alt="登录二维码" class="qrcode-image" />
@@ -405,7 +406,7 @@
           </div>
           <div v-else-if="loginStatus === '500'" class="error-wrapper">
             <el-icon><CircleCloseFilled /></el-icon>
-            <span>添加失败，请稍后再试</span>
+            <span>{{ loginResultMessage || '添加失败，请稍后再试' }}</span>
           </div>
 
           <div v-if="statusMessages.length" class="status-stream">
@@ -608,6 +609,8 @@ const rules = {
 const sseConnecting = ref(false)
 const qrCodeData = ref('')
 const loginStatus = ref('')
+const loginResultMessage = ref('')
+const currentStatusText = ref('')
 const statusMessages = ref([])
 
 // 添加账号
@@ -623,6 +626,8 @@ const handleAddAccount = () => {
   sseConnecting.value = false
   qrCodeData.value = ''
   loginStatus.value = ''
+  loginResultMessage.value = ''
+  currentStatusText.value = ''
   statusMessages.value = []
   dialogVisible.value = true
 }
@@ -750,6 +755,9 @@ const handleReLogin = (row) => {
   sseConnecting.value = false
   qrCodeData.value = ''
   loginStatus.value = ''
+  loginResultMessage.value = ''
+  currentStatusText.value = ''
+  statusMessages.value = []
 
   // 显示对话框
   dialogVisible.value = true
@@ -786,6 +794,8 @@ const connectSSE = (platform, name) => {
   sseConnecting.value = true
   qrCodeData.value = ''
   loginStatus.value = ''
+  loginResultMessage.value = ''
+  currentStatusText.value = '正在建立登录连接...'
   statusMessages.value = []
 
   // 获取平台类型编号
@@ -806,12 +816,17 @@ const connectSSE = (platform, name) => {
 
   const appendStatusMessage = (message) => {
     if (!message) return
-    statusMessages.value = [...statusMessages.value, message].slice(-8)
+    currentStatusText.value = message
+    statusMessages.value = [...statusMessages.value, message].slice(-10)
   }
 
   const handleLoginResult = (code, message = '') => {
     const finalCode = String(code)
     loginStatus.value = finalCode
+    loginResultMessage.value = message || ''
+    if (message) {
+      currentStatusText.value = message
+    }
 
     if (finalCode === '200') {
       setTimeout(() => {
@@ -845,6 +860,10 @@ const connectSSE = (platform, name) => {
         loginStatus.value = ''
       }, 2000)
     }
+  }
+
+  eventSource.onopen = () => {
+    appendStatusMessage('已连接服务器，等待返回二维码')
   }
 
   // 监听消息
@@ -908,6 +927,7 @@ const connectSSE = (platform, name) => {
     }
 
     appendStatusMessage('与服务器的实时连接中断，请重试')
+    currentStatusText.value = '连接中断，请重试'
     ElMessage.error('连接服务器失败，请稍后再试')
     closeSSEConnection()
     sseConnecting.value = false
@@ -1088,6 +1108,20 @@ onBeforeUnmount(() => {
       }
     }
     
+    .current-status {
+      margin: 0 0 12px;
+      width: 100%;
+      max-width: 420px;
+      background: #ecf5ff;
+      border: 1px solid #d9ecff;
+      color: #409eff;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 13px;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+
     .success-wrapper .el-icon {
       color: #67c23a;
     }

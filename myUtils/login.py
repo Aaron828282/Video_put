@@ -87,13 +87,15 @@ async def _wait_for_login_signal(page, context, original_url, status_queue, qr_l
 
                 if qr_changed_at is not None:
                     post_scan_wait = int(time.monotonic() - qr_changed_at)
-                    if post_scan_wait >= 20:
+                    if post_scan_wait > 0 and post_scan_wait % 5 == 0:
+                        _emit_status(status_queue, 'post_scan_waiting', '已检测到扫码动作，等待平台完成授权回写', waited_seconds=post_scan_wait)
+                    if post_scan_wait >= 30:
                         _emit_status(status_queue, 'post_scan_wait_done', '扫码后等待完成，开始校验登录态')
                         return 'qr_changed'
             except Exception:
                 pass
 
-        if elapsed // 10 != last_progress // 10:
+        if elapsed // 5 != last_progress // 5:
             last_progress = elapsed
             _emit_status(status_queue, 'waiting', '等待扫码授权中', remaining_seconds=remain)
 
@@ -114,7 +116,7 @@ async def _finalize_cookie_and_store(platform_type, user_name, context, status_q
     _emit_status(status_queue, 'cookie_saved', '已保存登录态，正在校验 Cookie 有效性')
 
     result = False
-    max_attempts = 5
+    max_attempts = 10
     for attempt in range(1, max_attempts + 1):
         await context.storage_state(path=cookie_file_path)
         _emit_status(status_queue, 'cookie_checking', f'登录态校验中（第 {attempt}/{max_attempts} 次）')
@@ -122,7 +124,8 @@ async def _finalize_cookie_and_store(platform_type, user_name, context, status_q
         if result:
             break
         if attempt < max_attempts:
-            await asyncio.sleep(3)
+            _emit_status(status_queue, 'cookie_retry_wait', '登录态尚未稳定，等待后重试')
+            await asyncio.sleep(5)
 
     if not result:
         _emit_result(status_queue, '500', 'Cookie 校验失败，请确认手机端已完成授权后重试')
