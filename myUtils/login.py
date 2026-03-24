@@ -99,12 +99,7 @@ async def get_tencent_cookie(id,status_queue):
             url_changed_event.set()
 
     async with async_playwright() as playwright:
-        options = {
-            'args': [
-                '--lang en-GB'
-            ],
-            'headless': LOCAL_CHROME_HEADLESS,  # Set headless option here
-        }
+        options = get_browser_options()
         # Make sure to run headed.
         browser = await playwright.chromium.launch(**options)
         # Setup context however you like.
@@ -176,12 +171,7 @@ async def get_ks_cookie(id,status_queue):
         if page.url != original_url:
             url_changed_event.set()
     async with async_playwright() as playwright:
-        options = {
-            'args': [
-                '--lang en-GB'
-            ],
-            'headless': LOCAL_CHROME_HEADLESS,  # Set headless option here
-        }
+        options = get_browser_options()
         # Make sure to run headed.
         browser = await playwright.chromium.launch(**options)
         # Setup context however you like.
@@ -252,12 +242,7 @@ async def xiaohongshu_cookie_gen(id,status_queue):
             url_changed_event.set()
 
     async with async_playwright() as playwright:
-        options = {
-            'args': [
-                '--lang en-GB'
-            ],
-            'headless': LOCAL_CHROME_HEADLESS,  # Set headless option here
-        }
+        options = get_browser_options()
         # Make sure to run headed.
         browser = await playwright.chromium.launch(**options)
         # Setup context however you like.

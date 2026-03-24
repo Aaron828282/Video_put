@@ -19,6 +19,7 @@ FROM python:3.10.19
 WORKDIR /app
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+ENV LOCAL_CHROME_HEADLESS=true
 
 RUN apt-get update && apt-get install -y --no-install-recommends libnss3 \
     libnspr4 \

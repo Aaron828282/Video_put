@@ -416,17 +416,17 @@ def login():
     # 账号名
     id = request.args.get('id')
 
+    if not id:
+        return jsonify({"code": 400, "msg": "id is required", "data": None}), 400
+
     # 模拟一个用于异步通信的队列
     status_queue = Queue()
     active_queues[id] = status_queue
 
-    def on_close():
-        print(f"清理队列: {id}")
-        del active_queues[id]
     # 启动异步任务线程
-    thread = threading.Thread(target=run_async_function, args=(type,id,status_queue), daemon=True)
+    thread = threading.Thread(target=run_async_function, args=(type, id, status_queue), daemon=True)
     thread.start()
-    response = Response(sse_stream(status_queue,), mimetype='text/event-stream')
+    response = Response(sse_stream(id, status_queue), mimetype='text/event-stream')
     response.headers['Cache-Control'] = 'no-cache'
     response.headers['X-Accel-Buffering'] = 'no'  # 关键：禁用 Nginx 缓冲
     response.headers['Content-Type'] = 'text/event-stream'
@@ -738,14 +738,24 @@ def run_async_function(type,id,status_queue):
             loop.close()
 
 # SSE 流生成器函数
-def sse_stream(status_queue):
-    while True:
-        if not status_queue.empty():
-            msg = status_queue.get()
-            yield f"data: {msg}\n\n"
-        else:
-            # 避免 CPU 占满
-            time.sleep(0.1)
+def sse_stream(account_id, status_queue):
+    last_heartbeat = time.time()
+    try:
+        while True:
+            if not status_queue.empty():
+                msg = status_queue.get()
+                yield f"data: {msg}\n\n"
+                if msg in ("200", "500"):
+                    break
+            else:
+                now = time.time()
+                if now - last_heartbeat >= 15:
+                    yield ": keep-alive\n\n"
+                    last_heartbeat = now
+                # 避免 CPU 占满
+                time.sleep(0.1)
+    finally:
+        active_queues.pop(account_id, None)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', '5409')))
