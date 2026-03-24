@@ -436,8 +436,11 @@ def login():
         'sms_code_queue': sms_code_queue,
         'sms_action_queue': sms_action_queue,
         'expecting_sms': False,
+        'pending_sms_send': False,
         'last_sms_submit_ts': 0,
         'last_sms_send_ts': 0,
+        'last_sms_send_try_ts': 0,
+        'last_sms_send_hint_ts': 0,
         'sms_send_attempted': False,
         'active': True,
         'created_at': int(time.time())
@@ -504,12 +507,22 @@ def trigger_login_sms_send():
     if not session_context or not session_context.get('active'):
         return jsonify({"code": 500, "msg": "登录会话不存在或已结束", "data": None}), 200
 
+    session_context['pending_sms_send'] = True
     session_context['sms_action_queue'].put('send')
 
     if session_context.get('expecting_sms'):
-        message = "已触发发送验证码，请留意短信"
+        message = "正在尝试点击发送验证码，请留意短信"
     else:
-        message = "已记录发送请求，检测到短信验证页面后会自动触发"
+        message = "已记录发送请求，检测到抖音官方短信弹窗后会自动触发"
+
+    status_queue = session_context.get('status_queue')
+    if status_queue is not None:
+        status_queue.put(json.dumps({
+            'type': 'status',
+            'stage': 'sms_send_requested',
+            'message': message,
+            'ts': int(time.time())
+        }, ensure_ascii=False))
 
     return jsonify({
         "code": 200,
