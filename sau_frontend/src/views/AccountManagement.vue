@@ -407,6 +407,10 @@
             <el-icon><CircleCloseFilled /></el-icon>
             <span>添加失败，请稍后再试</span>
           </div>
+
+          <div v-if="statusMessages.length" class="status-stream">
+            <p v-for="(item, index) in statusMessages" :key="`${index}-${item}`">{{ item }}</p>
+          </div>
         </div>
       </el-form>
       <template #footer>
@@ -604,6 +608,7 @@ const rules = {
 const sseConnecting = ref(false)
 const qrCodeData = ref('')
 const loginStatus = ref('')
+const statusMessages = ref([])
 
 // 添加账号
 const handleAddAccount = () => {
@@ -618,6 +623,7 @@ const handleAddAccount = () => {
   sseConnecting.value = false
   qrCodeData.value = ''
   loginStatus.value = ''
+  statusMessages.value = []
   dialogVisible.value = true
 }
 
@@ -780,6 +786,7 @@ const connectSSE = (platform, name) => {
   sseConnecting.value = true
   qrCodeData.value = ''
   loginStatus.value = ''
+  statusMessages.value = []
 
   // 获取平台类型编号
   const platformTypeMap = {
@@ -797,72 +804,110 @@ const connectSSE = (platform, name) => {
 
   eventSource = new EventSource(url)
 
-  // 监听消息
-  eventSource.onmessage = (event) => {
-    const data = event.data
+  const appendStatusMessage = (message) => {
+    if (!message) return
+    statusMessages.value = [...statusMessages.value, message].slice(-8)
+  }
 
-    // 如果还没有二维码数据，且数据长度较长，认为是二维码
-    if (!qrCodeData.value && data.length > 100) {
-      try {
-        if (data.startsWith('data:image')) {
-          qrCodeData.value = data
-        } else {
-          qrCodeData.value = `data:image/png;base64,${data}`
-        }
-      } catch (error) {
-        // 处理二维码数据出错
-      }
-    }
-    // 如果收到状态码
-    else if (data === '200' || data === '500') {
-      loginStatus.value = data
+  const handleLoginResult = (code, message = '') => {
+    const finalCode = String(code)
+    loginStatus.value = finalCode
 
-      // 如果登录成功
-      if (data === '200') {
-        setTimeout(() => {
-          // 关闭连接
-          closeSSEConnection()
-
-          // 1秒后关闭对话框并开始刷新
-          setTimeout(() => {
-            dialogVisible.value = false
-            sseConnecting.value = false
-
-            // 根据是否是重新登录显示不同提示
-            ElMessage.success(dialogType.value === 'edit' ? '重新登录成功' : '账号添加成功')
-
-            // 显示更新账号信息提示
-            ElMessage({
-              type: 'info',
-              message: '正在同步账号信息...',
-              duration: 0
-            })
-
-            // 触发刷新操作
-            fetchAccounts().then(() => {
-              // 刷新完成后关闭提示
-              ElMessage.closeAll()
-              ElMessage.success('账号信息已更新')
-            })
-          }, 1000)
-        }, 1000)
-      } else {
-        // 登录失败，关闭连接
+    if (finalCode === '200') {
+      setTimeout(() => {
         closeSSEConnection()
 
-        // 2秒后重置状态，允许重试
         setTimeout(() => {
+          dialogVisible.value = false
           sseConnecting.value = false
-          qrCodeData.value = ''
-          loginStatus.value = ''
-        }, 2000)
+          ElMessage.success(message || (dialogType.value === 'edit' ? '重新登录成功' : '账号添加成功'))
+
+          ElMessage({
+            type: 'info',
+            message: '正在同步账号信息...',
+            duration: 0
+          })
+
+          fetchAccounts().then(() => {
+            ElMessage.closeAll()
+            ElMessage.success('账号信息已更新')
+          })
+        }, 1000)
+      }, 1000)
+    } else {
+      if (message) {
+        ElMessage.error(message)
       }
+      closeSSEConnection()
+      setTimeout(() => {
+        sseConnecting.value = false
+        qrCodeData.value = ''
+        loginStatus.value = ''
+      }, 2000)
+    }
+  }
+
+  // 监听消息
+  eventSource.onmessage = (event) => {
+    const rawData = event.data
+    let payload = null
+
+    try {
+      payload = JSON.parse(rawData)
+    } catch (error) {
+      payload = null
+    }
+
+    if (payload?.type === 'status') {
+      appendStatusMessage(payload.message)
+      return
+    }
+
+    if (payload?.type === 'qr') {
+      const qrData = payload.data || ''
+      if (qrData) {
+        if (qrData.startsWith('data:image')) {
+          qrCodeData.value = qrData
+        } else {
+          qrCodeData.value = `data:image/png;base64,${qrData}`
+        }
+      }
+      appendStatusMessage('二维码已更新，请扫码并在手机端确认授权')
+      return
+    }
+
+    if (payload?.type === 'result') {
+      appendStatusMessage(payload.message)
+      handleLoginResult(payload.code, payload.message)
+      return
+    }
+
+    if (!qrCodeData.value && rawData.length > 100) {
+      try {
+        if (rawData.startsWith('data:image')) {
+          qrCodeData.value = rawData
+        } else {
+          qrCodeData.value = `data:image/png;base64,${rawData}`
+        }
+      } catch (error) {
+      }
+      return
+    }
+
+    if (rawData === '200' || rawData === '500') {
+      handleLoginResult(rawData)
     }
   }
 
   // 监听错误
   eventSource.onerror = (error) => {
     console.error('SSE连接错误:', error)
+
+    if (loginStatus.value === '200' || loginStatus.value === '500') {
+      return
+    }
+
+    appendStatusMessage('与服务器的实时连接中断，请重试')
     ElMessage.error('连接服务器失败，请稍后再试')
     closeSSEConnection()
     sseConnecting.value = false
@@ -1049,6 +1094,30 @@ onBeforeUnmount(() => {
     
     .error-wrapper .el-icon {
       color: #f56c6c;
+    }
+
+    .status-stream {
+      margin-top: 16px;
+      width: 100%;
+      max-width: 420px;
+      max-height: 140px;
+      overflow-y: auto;
+      background: #f5f7fa;
+      border: 1px solid #ebeef5;
+      border-radius: 8px;
+      padding: 10px 12px;
+
+      p {
+        margin: 0 0 6px;
+        font-size: 12px;
+        color: #606266;
+        line-height: 1.5;
+        word-break: break-word;
+      }
+
+      p:last-child {
+        margin-bottom: 0;
+      }
     }
   }
 }

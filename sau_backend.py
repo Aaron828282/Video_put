@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import sqlite3
 import threading
@@ -745,14 +746,25 @@ def sse_stream(account_id, status_queue):
             if not status_queue.empty():
                 msg = status_queue.get()
                 yield f"data: {msg}\n\n"
+
+                should_break = False
                 if msg in ("200", "500"):
+                    should_break = True
+                else:
+                    try:
+                        payload = json.loads(msg)
+                        if payload.get("type") == "result" and str(payload.get("code")) in ("200", "500"):
+                            should_break = True
+                    except Exception:
+                        pass
+
+                if should_break:
                     break
             else:
                 now = time.time()
                 if now - last_heartbeat >= 15:
                     yield ": keep-alive\n\n"
                     last_heartbeat = now
-                # 避免 CPU 占满
                 time.sleep(0.1)
     finally:
         active_queues.pop(account_id, None)
