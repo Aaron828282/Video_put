@@ -45,17 +45,20 @@ async def cookie_auth_tencent(account_file):
         browser = await playwright.chromium.launch(headless=LOCAL_CHROME_HEADLESS)
         context = await browser.new_context(storage_state=account_file)
         context = await set_init_script(context)
-        # 创建一个新的页面
         page = await context.new_page()
-        # 访问指定的 URL
-        await page.goto("https://channels.weixin.qq.com/platform/post/create")
-        try:
-            await page.wait_for_selector('div.title-name:has-text("微信小店")', timeout=5000)  # 等待5秒
-            tencent_logger.error("[+] 等待5秒 cookie 失效")
+        await page.goto("https://channels.weixin.qq.com/platform/post/create", wait_until="domcontentloaded")
+        await asyncio.sleep(3)
+
+        current_url = page.url
+        has_login_prompt = await page.get_by_text("扫码登录").count() > 0
+        has_qr_iframe = await page.locator("iframe").count() > 0 and "login" in current_url
+
+        if "login" in current_url or has_login_prompt or has_qr_iframe:
+            tencent_logger.error("[+] cookie 失效，需要扫码登录")
             return False
-        except:
-            tencent_logger.success("[+] cookie 有效")
-            return True
+
+        tencent_logger.success("[+] cookie 有效")
+        return True
 
 
 async def cookie_auth_ks(account_file):
@@ -63,18 +66,19 @@ async def cookie_auth_ks(account_file):
         browser = await playwright.chromium.launch(headless=LOCAL_CHROME_HEADLESS)
         context = await browser.new_context(storage_state=account_file)
         context = await set_init_script(context)
-        # 创建一个新的页面
         page = await context.new_page()
-        # 访问指定的 URL
-        await page.goto("https://cp.kuaishou.com/article/publish/video")
-        try:
-            await page.wait_for_selector("div.names div.container div.name:text('机构服务')", timeout=5000)  # 等待5秒
+        await page.goto("https://cp.kuaishou.com/article/publish/video", wait_until="domcontentloaded")
+        await asyncio.sleep(3)
 
-            kuaishou_logger.info("[+] 等待5秒 cookie 失效")
+        current_url = page.url
+        has_login_prompt = await page.get_by_text("扫码登录").count() > 0 or await page.get_by_text("立即登录").count() > 0
+
+        if "login" in current_url or has_login_prompt:
+            kuaishou_logger.info("[+] cookie 失效，需要扫码登录")
             return False
-        except:
-            kuaishou_logger.success("[+] cookie 有效")
-            return True
+
+        kuaishou_logger.success("[+] cookie 有效")
+        return True
 
 
 async def cookie_auth_xhs(account_file):

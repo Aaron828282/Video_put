@@ -53,6 +53,7 @@ async def _wait_for_login_signal(page, context, original_url, status_queue, qr_l
     start = time.monotonic()
     last_progress = -1
     seen_popup_urls = set()
+    qr_changed_at = None
 
     _emit_status(status_queue, 'wait_start', '已生成二维码，请扫码并在手机端确认授权')
 
@@ -79,9 +80,16 @@ async def _wait_for_login_signal(page, context, original_url, status_queue, qr_l
 
         if qr_locator is not None:
             try:
-                if not await qr_locator.is_visible():
-                    _emit_status(status_queue, 'qr_changed', '二维码状态发生变化，继续校验登录状态')
-                    return 'qr_changed'
+                qr_visible = await qr_locator.is_visible()
+                if not qr_visible and qr_changed_at is None:
+                    qr_changed_at = time.monotonic()
+                    _emit_status(status_queue, 'qr_changed', '二维码状态已变化，等待手机端确认授权完成')
+
+                if qr_changed_at is not None:
+                    post_scan_wait = int(time.monotonic() - qr_changed_at)
+                    if post_scan_wait >= 20:
+                        _emit_status(status_queue, 'post_scan_wait_done', '扫码后等待完成，开始校验登录态')
+                        return 'qr_changed'
             except Exception:
                 pass
 
@@ -103,12 +111,21 @@ async def _finalize_cookie_and_store(platform_type, user_name, context, status_q
     cookie_file_name = f'{uuid_v1}.json'
     cookie_file_path = cookies_dir / cookie_file_name
 
-    await context.storage_state(path=cookie_file_path)
     _emit_status(status_queue, 'cookie_saved', '已保存登录态，正在校验 Cookie 有效性')
 
-    result = await check_cookie(platform_type, cookie_file_name)
+    result = False
+    max_attempts = 5
+    for attempt in range(1, max_attempts + 1):
+        await context.storage_state(path=cookie_file_path)
+        _emit_status(status_queue, 'cookie_checking', f'登录态校验中（第 {attempt}/{max_attempts} 次）')
+        result = await check_cookie(platform_type, cookie_file_name)
+        if result:
+            break
+        if attempt < max_attempts:
+            await asyncio.sleep(3)
+
     if not result:
-        _emit_result(status_queue, '500', 'Cookie 校验失败，请重试扫码授权')
+        _emit_result(status_queue, '500', 'Cookie 校验失败，请确认手机端已完成授权后重试')
         return False
 
     with sqlite3.connect(Path(BASE_DIR / 'db' / 'database.db')) as conn:
