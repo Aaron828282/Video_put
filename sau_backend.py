@@ -14,7 +14,7 @@ from conf import BASE_DIR
 from myUtils.login import get_tencent_cookie, douyin_cookie_gen, get_ks_cookie, xiaohongshu_cookie_gen
 from myUtils.postVideo import post_video_tencent, post_video_DouYin, post_video_ks, post_video_xhs
 
-active_queues = {}
+active_sessions = {}
 app = Flask(__name__)
 
 DB_PATH = Path(BASE_DIR / "db" / "database.db")
@@ -420,19 +420,73 @@ def login():
     if not id:
         return jsonify({"code": 400, "msg": "id is required", "data": None}), 400
 
-    # 模拟一个用于异步通信的队列
+    if type not in {'1', '2', '3', '4'}:
+        return jsonify({"code": 400, "msg": "invalid type", "data": None}), 400
+
+    session_id = str(uuid.uuid4())
     status_queue = Queue()
-    active_queues[id] = status_queue
+    sms_code_queue = Queue()
+
+    session_context = {
+        'session_id': session_id,
+        'account_id': id,
+        'type': type,
+        'status_queue': status_queue,
+        'sms_code_queue': sms_code_queue,
+        'expecting_sms': False,
+        'last_sms_submit_ts': 0,
+        'active': True,
+        'created_at': int(time.time())
+    }
+    active_sessions[session_id] = session_context
+
+    status_queue.put(json.dumps({
+        'type': 'session',
+        'sessionId': session_id,
+        'message': '登录会话已创建',
+        'ts': int(time.time())
+    }, ensure_ascii=False))
 
     # 启动异步任务线程
-    thread = threading.Thread(target=run_async_function, args=(type, id, status_queue), daemon=True)
+    thread = threading.Thread(target=run_async_function, args=(type, id, session_context), daemon=True)
     thread.start()
-    response = Response(sse_stream(id, status_queue), mimetype='text/event-stream')
+
+    response = Response(sse_stream(session_id, session_context), mimetype='text/event-stream')
     response.headers['Cache-Control'] = 'no-cache'
     response.headers['X-Accel-Buffering'] = 'no'  # 关键：禁用 Nginx 缓冲
     response.headers['Content-Type'] = 'text/event-stream'
     response.headers['Connection'] = 'keep-alive'
     return response
+
+
+@app.route('/login/sms-code', methods=['POST'])
+def submit_login_sms_code():
+    data = request.get_json(silent=True) or {}
+    session_id = data.get('sessionId')
+    sms_code = str(data.get('code', '')).strip()
+
+    if not session_id:
+        return jsonify({"code": 400, "msg": "sessionId is required", "data": None}), 200
+
+    if not sms_code:
+        return jsonify({"code": 400, "msg": "验证码不能为空", "data": None}), 200
+
+    session_context = active_sessions.get(session_id)
+    if not session_context or not session_context.get('active'):
+        return jsonify({"code": 500, "msg": "登录会话不存在或已结束", "data": None}), 200
+
+    session_context['sms_code_queue'].put(sms_code)
+    session_context['last_sms_submit_ts'] = int(time.time())
+
+    return jsonify({
+        "code": 200,
+        "msg": "验证码已提交，等待校验",
+        "data": {
+            "sessionId": session_id,
+            "expectingSms": bool(session_context.get('expecting_sms', False))
+        }
+    }), 200
+
 
 @app.route('/postVideo', methods=['POST'])
 def postVideo():
@@ -715,31 +769,39 @@ def download_cookie():
 
 
 # 包装函数：在线程中运行异步函数
-def run_async_function(type,id,status_queue):
-    match type:
-        case '1':
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(xiaohongshu_cookie_gen(id, status_queue))
+def run_async_function(type, id, session_context):
+    status_queue = session_context['status_queue']
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        match type:
+            case '1':
+                loop.run_until_complete(xiaohongshu_cookie_gen(id, status_queue, session_context))
+            case '2':
+                loop.run_until_complete(get_tencent_cookie(id, status_queue, session_context))
+            case '3':
+                loop.run_until_complete(douyin_cookie_gen(id, status_queue, session_context))
+            case '4':
+                loop.run_until_complete(get_ks_cookie(id, status_queue, session_context))
+    except Exception as error:
+        status_queue.put(json.dumps({
+            'type': 'result',
+            'code': '500',
+            'message': f'登录流程异常: {error}',
+            'ts': int(time.time())
+        }, ensure_ascii=False))
+    finally:
+        session_context['active'] = False
+        try:
             loop.close()
-        case '2':
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(get_tencent_cookie(id,status_queue))
-            loop.close()
-        case '3':
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(douyin_cookie_gen(id,status_queue))
-            loop.close()
-        case '4':
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(get_ks_cookie(id,status_queue))
-            loop.close()
+        except Exception:
+            pass
+
 
 # SSE 流生成器函数
-def sse_stream(account_id, status_queue):
+def sse_stream(session_id, session_context):
+    status_queue = session_context['status_queue']
     last_heartbeat = time.time()
     try:
         while True:
@@ -765,9 +827,13 @@ def sse_stream(account_id, status_queue):
                 if now - last_heartbeat >= 15:
                     yield ": keep-alive\n\n"
                     last_heartbeat = now
+
+                if not session_context.get('active') and status_queue.empty():
+                    break
+
                 time.sleep(0.1)
     finally:
-        active_queues.pop(account_id, None)
+        active_sessions.pop(session_id, None)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', '5409')))

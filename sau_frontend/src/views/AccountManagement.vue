@@ -409,6 +409,21 @@
             <span>{{ loginResultMessage || '添加失败，请稍后再试' }}</span>
           </div>
 
+          <div v-if="smsRequired && loginStatus !== '200' && loginStatus !== '500'" class="sms-panel">
+            <p class="sms-tip">{{ smsHint || '检测到短信验证，请输入手机收到的验证码' }}</p>
+            <div class="sms-action-row">
+              <el-input
+                v-model="smsCode"
+                maxlength="8"
+                placeholder="请输入短信验证码"
+                @keyup.enter="submitSmsCode"
+              />
+              <el-button type="primary" :loading="smsSubmitting" @click="submitSmsCode">
+                提交验证码
+              </el-button>
+            </div>
+          </div>
+
           <div v-if="statusMessages.length" class="status-stream">
             <p v-for="(item, index) in statusMessages" :key="`${index}-${item}`">{{ item }}</p>
           </div>
@@ -612,6 +627,11 @@ const loginStatus = ref('')
 const loginResultMessage = ref('')
 const currentStatusText = ref('')
 const statusMessages = ref([])
+const currentLoginSessionId = ref('')
+const smsRequired = ref(false)
+const smsCode = ref('')
+const smsHint = ref('')
+const smsSubmitting = ref(false)
 
 // 添加账号
 const handleAddAccount = () => {
@@ -629,6 +649,11 @@ const handleAddAccount = () => {
   loginResultMessage.value = ''
   currentStatusText.value = ''
   statusMessages.value = []
+  currentLoginSessionId.value = ''
+  smsRequired.value = false
+  smsCode.value = ''
+  smsHint.value = ''
+  smsSubmitting.value = false
   dialogVisible.value = true
 }
 
@@ -758,6 +783,11 @@ const handleReLogin = (row) => {
   loginResultMessage.value = ''
   currentStatusText.value = ''
   statusMessages.value = []
+  currentLoginSessionId.value = ''
+  smsRequired.value = false
+  smsCode.value = ''
+  smsHint.value = ''
+  smsSubmitting.value = false
 
   // 显示对话框
   dialogVisible.value = true
@@ -797,6 +827,11 @@ const connectSSE = (platform, name) => {
   loginResultMessage.value = ''
   currentStatusText.value = '正在建立登录连接...'
   statusMessages.value = []
+  currentLoginSessionId.value = ''
+  smsRequired.value = false
+  smsCode.value = ''
+  smsHint.value = ''
+  smsSubmitting.value = false
 
   // 获取平台类型编号
   const platformTypeMap = {
@@ -858,6 +893,11 @@ const connectSSE = (platform, name) => {
         sseConnecting.value = false
         qrCodeData.value = ''
         loginStatus.value = ''
+        currentLoginSessionId.value = ''
+        smsRequired.value = false
+        smsCode.value = ''
+        smsHint.value = ''
+        smsSubmitting.value = false
       }, 2000)
     }
   }
@@ -879,6 +919,38 @@ const connectSSE = (platform, name) => {
 
     if (payload?.type === 'status') {
       appendStatusMessage(payload.message)
+      return
+    }
+
+    if (payload?.type === 'session') {
+      if (payload.sessionId) {
+        currentLoginSessionId.value = payload.sessionId
+      }
+      appendStatusMessage(payload.message || '登录会话已创建')
+      return
+    }
+
+    if (payload?.type === 'sms_required') {
+      if (payload.sessionId) {
+        currentLoginSessionId.value = payload.sessionId
+      }
+      smsRequired.value = true
+      smsHint.value = payload.maskedPhone
+        ? `检测到短信验证，请输入发送到 ${payload.maskedPhone} 的验证码`
+        : '检测到短信验证，请输入手机收到的验证码'
+      appendStatusMessage(payload.message || '检测到短信验证，请输入短信验证码')
+      return
+    }
+
+    if (payload?.type === 'sms_submitted') {
+      smsRequired.value = false
+      appendStatusMessage(payload.message || '验证码已提交，等待平台校验')
+      return
+    }
+
+    if (payload?.type === 'sms_invalid') {
+      smsRequired.value = true
+      appendStatusMessage(payload.message || '验证码校验失败，请重试')
       return
     }
 
@@ -931,6 +1003,39 @@ const connectSSE = (platform, name) => {
     ElMessage.error('连接服务器失败，请稍后再试')
     closeSSEConnection()
     sseConnecting.value = false
+    currentLoginSessionId.value = ''
+    smsRequired.value = false
+    smsSubmitting.value = false
+  }
+}
+
+// 提交短信验证码
+const submitSmsCode = async () => {
+  const normalizedCode = `${smsCode.value || ''}`.trim()
+
+  if (!currentLoginSessionId.value) {
+    ElMessage.error('登录会话已失效，请重新发起登录')
+    return
+  }
+
+  if (!normalizedCode) {
+    ElMessage.warning('请输入短信验证码')
+    return
+  }
+
+  smsSubmitting.value = true
+  try {
+    await accountApi.submitLoginSmsCode({
+      sessionId: currentLoginSessionId.value,
+      code: normalizedCode
+    })
+    currentStatusText.value = '验证码已提交，等待平台校验'
+    statusMessages.value = [...statusMessages.value, '验证码已提交，等待平台校验'].slice(-10)
+    smsCode.value = ''
+  } catch (error) {
+    ElMessage.error(error?.message || '验证码提交失败，请重试')
+  } finally {
+    smsSubmitting.value = false
   }
 }
 
@@ -1120,6 +1225,28 @@ onBeforeUnmount(() => {
       font-size: 13px;
       line-height: 1.4;
       word-break: break-word;
+    }
+
+    .sms-panel {
+      margin-top: 12px;
+      width: 100%;
+      max-width: 420px;
+      background: #fff7e6;
+      border: 1px solid #ffe7ba;
+      border-radius: 8px;
+      padding: 10px 12px;
+
+      .sms-tip {
+        margin: 0 0 10px;
+        font-size: 13px;
+        color: #d48806;
+        line-height: 1.5;
+      }
+
+      .sms-action-row {
+        display: flex;
+        gap: 10px;
+      }
     }
 
     .success-wrapper .el-icon {
