@@ -426,6 +426,7 @@ def login():
     session_id = str(uuid.uuid4())
     status_queue = Queue()
     sms_code_queue = Queue()
+    sms_action_queue = Queue()
 
     session_context = {
         'session_id': session_id,
@@ -433,8 +434,11 @@ def login():
         'type': type,
         'status_queue': status_queue,
         'sms_code_queue': sms_code_queue,
+        'sms_action_queue': sms_action_queue,
         'expecting_sms': False,
         'last_sms_submit_ts': 0,
+        'last_sms_send_ts': 0,
+        'sms_send_attempted': False,
         'active': True,
         'created_at': int(time.time())
     }
@@ -484,6 +488,32 @@ def submit_login_sms_code():
         "data": {
             "sessionId": session_id,
             "expectingSms": bool(session_context.get('expecting_sms', False))
+        }
+    }), 200
+
+
+@app.route('/login/sms-send', methods=['POST'])
+def trigger_login_sms_send():
+    data = request.get_json(silent=True) or {}
+    session_id = data.get('sessionId')
+
+    if not session_id:
+        return jsonify({"code": 400, "msg": "sessionId is required", "data": None}), 200
+
+    session_context = active_sessions.get(session_id)
+    if not session_context or not session_context.get('active'):
+        return jsonify({"code": 500, "msg": "登录会话不存在或已结束", "data": None}), 200
+
+    if not session_context.get('expecting_sms'):
+        return jsonify({"code": 500, "msg": "当前不在短信验证阶段", "data": None}), 200
+
+    session_context['sms_action_queue'].put('send')
+
+    return jsonify({
+        "code": 200,
+        "msg": "已触发发送验证码，请留意短信",
+        "data": {
+            "sessionId": session_id
         }
     }), 200
 

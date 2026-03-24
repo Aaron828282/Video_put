@@ -412,6 +412,9 @@
           <div v-if="smsRequired && loginStatus !== '200' && loginStatus !== '500'" class="sms-panel">
             <p class="sms-tip">{{ smsHint || '检测到短信验证，请输入手机收到的验证码' }}</p>
             <div class="sms-action-row">
+              <el-button type="warning" plain :loading="smsSendSubmitting" @click="triggerSmsSend">
+                发送验证码
+              </el-button>
               <el-input
                 v-model="smsCode"
                 maxlength="8"
@@ -632,6 +635,7 @@ const smsRequired = ref(false)
 const smsCode = ref('')
 const smsHint = ref('')
 const smsSubmitting = ref(false)
+const smsSendSubmitting = ref(false)
 
 // 添加账号
 const handleAddAccount = () => {
@@ -654,6 +658,7 @@ const handleAddAccount = () => {
   smsCode.value = ''
   smsHint.value = ''
   smsSubmitting.value = false
+  smsSendSubmitting.value = false
   dialogVisible.value = true
 }
 
@@ -788,6 +793,7 @@ const handleReLogin = (row) => {
   smsCode.value = ''
   smsHint.value = ''
   smsSubmitting.value = false
+  smsSendSubmitting.value = false
 
   // 显示对话框
   dialogVisible.value = true
@@ -832,6 +838,7 @@ const connectSSE = (platform, name) => {
   smsCode.value = ''
   smsHint.value = ''
   smsSubmitting.value = false
+  smsSendSubmitting.value = false
 
   // 获取平台类型编号
   const platformTypeMap = {
@@ -898,6 +905,7 @@ const connectSSE = (platform, name) => {
         smsCode.value = ''
         smsHint.value = ''
         smsSubmitting.value = false
+        smsSendSubmitting.value = false
       }, 2000)
     }
   }
@@ -936,9 +944,19 @@ const connectSSE = (platform, name) => {
       }
       smsRequired.value = true
       smsHint.value = payload.maskedPhone
-        ? `检测到短信验证，请输入发送到 ${payload.maskedPhone} 的验证码`
-        : '检测到短信验证，请输入手机收到的验证码'
-      appendStatusMessage(payload.message || '检测到短信验证，请输入短信验证码')
+        ? `检测到短信验证，请先点击“发送验证码”，再输入发送到 ${payload.maskedPhone} 的验证码`
+        : '检测到短信验证，请先点击“发送验证码”，再输入手机收到的验证码'
+      appendStatusMessage(payload.message || '检测到短信验证，请先发送验证码再输入')
+      return
+    }
+
+    if (payload?.type === 'sms_send_submitted') {
+      appendStatusMessage(payload.message || '已触发发送验证码，请查看短信')
+      return
+    }
+
+    if (payload?.type === 'sms_send_failed' || payload?.type === 'sms_send_cooldown') {
+      appendStatusMessage(payload.message || '发送验证码失败，请稍后重试')
       return
     }
 
@@ -1005,7 +1023,31 @@ const connectSSE = (platform, name) => {
     sseConnecting.value = false
     currentLoginSessionId.value = ''
     smsRequired.value = false
+    smsCode.value = ''
+    smsHint.value = ''
     smsSubmitting.value = false
+    smsSendSubmitting.value = false
+  }
+}
+
+// 触发发送短信验证码
+const triggerSmsSend = async () => {
+  if (!currentLoginSessionId.value) {
+    ElMessage.error('登录会话已失效，请重新发起登录')
+    return
+  }
+
+  smsSendSubmitting.value = true
+  try {
+    await accountApi.triggerLoginSmsSend({
+      sessionId: currentLoginSessionId.value
+    })
+    currentStatusText.value = '已触发发送验证码，请查看手机短信'
+    statusMessages.value = [...statusMessages.value, '已触发发送验证码，请查看手机短信'].slice(-10)
+  } catch (error) {
+    ElMessage.error(error?.message || '触发发送验证码失败，请重试')
+  } finally {
+    smsSendSubmitting.value = false
   }
 }
 
@@ -1245,7 +1287,12 @@ onBeforeUnmount(() => {
 
       .sms-action-row {
         display: flex;
+        align-items: center;
         gap: 10px;
+
+        .el-input {
+          flex: 1;
+        }
       }
     }
 

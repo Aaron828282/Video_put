@@ -30,5 +30,10 @@ export const accountApi = {
   // 提交短信验证码
   submitLoginSmsCode(data) {
     return http.post('/login/sms-code', data)
+  },
+
+  // 触发发送短信验证码
+  triggerLoginSmsSend(data) {
+    return http.post('/login/sms-send', data)
   }
 }

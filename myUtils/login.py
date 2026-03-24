@@ -41,6 +41,17 @@ SMS_SUBMIT_SELECTORS = [
     '[role="button"]:has-text("验证")'
 ]
 
+SMS_SEND_SELECTORS = [
+    'button:has-text("发送验证码")',
+    'button:has-text("获取验证码")',
+    'button:has-text("重新发送")',
+    'button:has-text("发送")',
+    'button:has-text("获取")',
+    '[role="button"]:has-text("发送验证码")',
+    '[role="button"]:has-text("获取验证码")',
+    '[role="button"]:has-text("重新发送")'
+]
+
 SMS_HINT_KEYWORDS = [
     '短信验证码',
     '请输入验证码',
@@ -180,6 +191,46 @@ async def _find_sms_input_target(context):
     return None
 
 
+async def _trigger_sms_send(context, status_queue):
+    target = await _find_sms_input_target(context)
+    if not target:
+        _emit_event(status_queue, 'sms_send_failed', message='未定位到短信验证页面，请稍后重试')
+        return False
+
+    frame = target['frame']
+
+    for selector in SMS_SEND_SELECTORS:
+        try:
+            button = frame.locator(selector).first
+            if await button.count() <= 0 or not await button.is_visible():
+                continue
+
+            disabled = await button.get_attribute('disabled')
+            aria_disabled = await button.get_attribute('aria-disabled')
+            class_name = (await button.get_attribute('class') or '').lower()
+            if disabled is not None or aria_disabled in {'true', '1'} or 'disabled' in class_name:
+                _emit_event(status_queue, 'sms_send_cooldown', message='发送按钮暂不可用，请稍后重试')
+                return False
+
+            await button.click()
+            _emit_event(status_queue, 'sms_send_submitted', message='已点击发送验证码，请查看手机短信')
+            return True
+        except Exception:
+            continue
+
+    try:
+        fallback_button = frame.get_by_text('发送验证码', exact=False).first
+        if await fallback_button.count() > 0 and await fallback_button.is_visible():
+            await fallback_button.click()
+            _emit_event(status_queue, 'sms_send_submitted', message='已点击发送验证码，请查看手机短信')
+            return True
+    except Exception:
+        pass
+
+    _emit_event(status_queue, 'sms_send_failed', message='未找到发送验证码按钮，请重试或检查页面状态')
+    return False
+
+
 async def _submit_sms_code(context, sms_code, status_queue):
     target = await _find_sms_input_target(context)
     if not target:
@@ -233,9 +284,28 @@ async def _wait_and_submit_sms_code(context, status_queue, session_context, time
     wait_start = time.monotonic()
     last_progress = -1
 
+    if not session_context.get('sms_send_attempted'):
+        await _trigger_sms_send(context, status_queue)
+        session_context['sms_send_attempted'] = True
+        session_context['last_sms_send_ts'] = int(time.time())
+
     while (time.monotonic() - wait_start) < timeout:
         elapsed = int(time.monotonic() - wait_start)
         remain = max(0, timeout - elapsed)
+
+        sms_action = ''
+        sms_action_queue = session_context.get('sms_action_queue')
+        if sms_action_queue is not None:
+            try:
+                sms_action = str(sms_action_queue.get_nowait()).strip().lower()
+            except Empty:
+                sms_action = ''
+
+        if sms_action in {'send', 'resend'}:
+            if await _trigger_sms_send(context, status_queue):
+                session_context['last_sms_send_ts'] = int(time.time())
+            else:
+                _emit_status(status_queue, 'sms_send_retry', '发送验证码失败，请稍后重试')
 
         sms_code = ''
         try:
@@ -255,7 +325,7 @@ async def _wait_and_submit_sms_code(context, status_queue, session_context, time
 
         if elapsed // 5 != last_progress // 5:
             last_progress = elapsed
-            _emit_status(status_queue, 'sms_waiting', '等待输入短信验证码', remaining_seconds=remain)
+            _emit_status(status_queue, 'sms_waiting', '请先发送验证码，再输入短信验证码', remaining_seconds=remain)
 
         await asyncio.sleep(0.5)
 
@@ -298,13 +368,15 @@ async def _wait_for_login_signal(page, context, original_url, status_queue, qr_l
             last_sms_submit_ts = int(session_context.get('last_sms_submit_ts', 0) or 0)
             if int(time.time()) - last_sms_submit_ts >= 8:
                 session_context['expecting_sms'] = True
+                session_context['sms_send_attempted'] = False
                 _emit_event(
                     status_queue,
                     'sms_required',
                     sessionId=session_context.get('session_id'),
-                    message='检测到短信验证，请输入短信验证码',
+                    message='检测到短信验证，请先发送验证码，再输入短信验证码',
                     maskedPhone=sms_target.get('masked_phone', ''),
                     timeoutSeconds=180,
+                    canSendSms=True,
                     url=sms_target.get('url', '')
                 )
 
