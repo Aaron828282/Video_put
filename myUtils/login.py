@@ -194,6 +194,7 @@ async def _find_sms_input_target(context):
 
 
 async def _trigger_sms_send(context, status_queue, emit_fail=True):
+    send_keywords = ['发送验证码', '获取验证码', '获取短信验证码', '重新发送', '发送', '获取']
     pages = [candidate_page for candidate_page in context.pages if not candidate_page.is_closed()]
 
     for candidate_page in reversed(pages):
@@ -214,21 +215,58 @@ async def _trigger_sms_send(context, status_queue, emit_fail=True):
                             _emit_event(status_queue, 'sms_send_cooldown', message='发送按钮暂不可用，请稍后重试')
                         return False
 
-                    await button.click()
+                    await button.scroll_into_view_if_needed()
+                    await button.click(force=True, timeout=1200)
                     _emit_event(status_queue, 'sms_send_submitted', message='已点击发送验证码，请查看手机短信')
                     return True
                 except Exception:
                     continue
 
-            for keyword in ['发送验证码', '获取验证码', '获取短信验证码', '重新发送', '发送', '获取']:
+            for keyword in send_keywords:
                 try:
                     fallback_button = frame.get_by_text(keyword, exact=False).first
-                    if await fallback_button.count() > 0 and await fallback_button.is_visible():
-                        await fallback_button.click()
-                        _emit_event(status_queue, 'sms_send_submitted', message='已点击发送验证码，请查看手机短信')
-                        return True
+                    if await fallback_button.count() <= 0 or not await fallback_button.is_visible():
+                        continue
+                    await fallback_button.scroll_into_view_if_needed()
+                    await fallback_button.click(force=True, timeout=1200)
+                    _emit_event(status_queue, 'sms_send_submitted', message=f'已点击“{keyword}”，请查看手机短信')
+                    return True
                 except Exception:
                     continue
+
+            try:
+                js_click_result = await frame.evaluate(
+                    """
+                    (keywords) => {
+                      const isVisible = (el) => {
+                        const rect = el.getBoundingClientRect();
+                        const style = window.getComputedStyle(el);
+                        return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                      };
+
+                      const candidates = Array.from(document.querySelectorAll('button,[role="button"],a,div,span'));
+                      for (const keyword of keywords) {
+                        for (const element of candidates) {
+                          const text = (element.innerText || element.textContent || '').trim();
+                          if (!text || !text.includes(keyword)) continue;
+                          if (!isVisible(element)) continue;
+                          const disabled = element.getAttribute('disabled') !== null || (element.getAttribute('aria-disabled') || '').toLowerCase() === 'true';
+                          if (disabled) continue;
+                          element.click();
+                          return { ok: true, text };
+                        }
+                      }
+                      return { ok: false, text: '' };
+                    }
+                    """,
+                    send_keywords
+                )
+                if js_click_result and js_click_result.get('ok'):
+                    click_text = js_click_result.get('text') or '发送验证码'
+                    _emit_event(status_queue, 'sms_send_submitted', message=f'已点击“{click_text}”，请查看手机短信')
+                    return True
+            except Exception:
+                continue
 
     if emit_fail:
         _emit_event(status_queue, 'sms_send_failed', message='未找到发送验证码按钮，等待官方短信弹窗出现后自动重试')
@@ -385,7 +423,12 @@ async def _wait_for_login_signal(page, context, original_url, status_queue, qr_l
                     last_sms_send_hint_ts = int(session_context.get('last_sms_send_hint_ts', 0) or 0)
                     if now_ts - last_sms_send_hint_ts >= 6:
                         session_context['last_sms_send_hint_ts'] = now_ts
-                        _emit_status(status_queue, 'sms_send_pending', '暂未检测到官方短信弹窗按钮，检测到后会自动点击')
+                        try:
+                            active_urls = [p.url or 'about:blank' for p in context.pages if not p.is_closed()]
+                        except Exception:
+                            active_urls = []
+                        url_hint = ' | '.join(active_urls[:3]) if active_urls else '无可见页面URL'
+                        _emit_status(status_queue, 'sms_send_pending', f'暂未检测到官方短信弹窗按钮，检测到后会自动点击。当前页面: {url_hint}')
 
         try:
             for popup_page in context.pages[1:]:
