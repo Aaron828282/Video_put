@@ -18,6 +18,7 @@ active_sessions = {}
 app = Flask(__name__)
 
 DB_PATH = Path(BASE_DIR / "db" / "database.db")
+LOGIN_EXECUTION_MODE = os.getenv("LOGIN_EXECUTION_MODE", "local").strip().lower()
 
 
 def ensure_runtime_storage_and_db():
@@ -76,6 +77,20 @@ def vite_svg():
 @app.route('/')
 def index():  # put application's code here
     return send_from_directory(current_dir, 'index.html')
+
+
+@app.route('/login/mode', methods=['GET'])
+def get_login_mode():
+    mode = 'local' if LOGIN_EXECUTION_MODE == 'local' else 'server'
+    return jsonify({
+        "code": 200,
+        "msg": "ok",
+        "data": {
+            "mode": mode,
+            "isLocalTakeover": mode == 'local'
+        }
+    }), 200
+
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
@@ -423,6 +438,35 @@ def login():
     if type not in {'1', '2', '3', '4'}:
         return jsonify({"code": 400, "msg": "invalid type", "data": None}), 400
 
+    if LOGIN_EXECUTION_MODE == 'local':
+        session_id = str(uuid.uuid4())
+        status_queue = Queue()
+
+        status_queue.put(json.dumps({
+            'type': 'session',
+            'sessionId': session_id,
+            'message': '当前为本机浏览器接管模式，请在本机完成登录后上传 Cookie 文件',
+            'ts': int(time.time())
+        }, ensure_ascii=False))
+
+        status_queue.put(json.dumps({
+            'type': 'result',
+            'code': '500',
+            'message': '已切换本机浏览器接管模式：请使用“本机接管（上传Cookie）”方式添加账号',
+            'ts': int(time.time())
+        }, ensure_ascii=False))
+
+        def local_mode_stream():
+            while not status_queue.empty():
+                yield f"data: {status_queue.get()}\\n\\n"
+
+        response = Response(local_mode_stream(), mimetype='text/event-stream')
+        response.headers['Cache-Control'] = 'no-cache'
+        response.headers['X-Accel-Buffering'] = 'no'
+        response.headers['Content-Type'] = 'text/event-stream'
+        response.headers['Connection'] = 'keep-alive'
+        return response
+
     session_id = str(uuid.uuid4())
     status_queue = Queue()
     sms_code_queue = Queue()
@@ -769,6 +813,109 @@ def upload_cookie():
         return jsonify({
             "code": 500,
             "msg": f"上传Cookie文件失败: {str(e)}",
+            "data": None
+        }), 500
+
+
+# 本机接管模式：直接上传Cookie并创建/更新账号
+@app.route('/uploadCookieDirect', methods=['POST'])
+def upload_cookie_direct():
+    try:
+        if 'file' not in request.files:
+            return jsonify({
+                "code": 400,
+                "msg": "没有找到Cookie文件",
+                "data": None
+            }), 400
+
+        file = request.files['file']
+        if file.filename == '' or not file.filename.endswith('.json'):
+            return jsonify({
+                "code": 400,
+                "msg": "Cookie文件必须是JSON格式",
+                "data": None
+            }), 400
+
+        type_value = str(request.form.get('type', '')).strip()
+        user_name = str(request.form.get('userName', '')).strip()
+
+        if type_value not in {'1', '2', '3', '4'}:
+            return jsonify({
+                "code": 400,
+                "msg": "平台类型不合法",
+                "data": None
+            }), 400
+
+        if not user_name:
+            return jsonify({
+                "code": 400,
+                "msg": "账号名称不能为空",
+                "data": None
+            }), 400
+
+        raw_content = file.read()
+        try:
+            json.loads(raw_content.decode('utf-8'))
+        except Exception:
+            return jsonify({
+                "code": 400,
+                "msg": "Cookie文件内容不是有效JSON",
+                "data": None
+            }), 400
+
+        with sqlite3.connect(Path(BASE_DIR / "db" / "database.db")) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT id, filePath
+                FROM user_info
+                WHERE type = ? AND userName = ?
+                ORDER BY id DESC
+                LIMIT 1
+                ''',
+                (int(type_value), user_name)
+            )
+            existing = cursor.fetchone()
+
+            if existing:
+                account_id = existing['id']
+                cookie_filename = existing['filePath']
+                cursor.execute('UPDATE user_info SET status = ? WHERE id = ?', (1, account_id))
+            else:
+                cookie_filename = f"{uuid.uuid1()}.json"
+                cursor.execute(
+                    '''
+                    INSERT INTO user_info (type, filePath, userName, status)
+                    VALUES (?, ?, ?, ?)
+                    ''',
+                    (int(type_value), cookie_filename, user_name, 1)
+                )
+                account_id = cursor.lastrowid
+
+            conn.commit()
+
+        cookie_file_path = Path(BASE_DIR / "cookiesFile" / cookie_filename)
+        cookie_file_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cookie_file_path, 'wb') as cookie_handle:
+            cookie_handle.write(raw_content)
+
+        return jsonify({
+            "code": 200,
+            "msg": "本机Cookie导入成功",
+            "data": {
+                "id": account_id,
+                "filePath": cookie_filename,
+                "userName": user_name,
+                "type": int(type_value)
+            }
+        }), 200
+
+    except Exception as e:
+        print(f"本机Cookie导入失败: {str(e)}")
+        return jsonify({
+            "code": 500,
+            "msg": f"本机Cookie导入失败: {str(e)}",
             "data": None
         }), 500
 

@@ -272,3 +272,25 @@
 > 如果这个项目对您有帮助，请给一个 ⭐ Star 以表示支持！
 
 [![Star History Chart](https://api.star-history.com/svg?repos=dreammis/social-auto-upload&type=Date)](https://star-history.com/#dreammis/social-auto-upload&Date)
+
+## 本机浏览器接管模式（适用于线上部署）
+
+当后端部署在 Railway 等云环境时，平台官方短信验证弹窗通常出现在云端浏览器上下文，用户本机无法直接看到。
+本项目新增了本机接管模式：在账号管理新增账号时，选择 **本机浏览器接管（推荐）**，上传本机导出的 Cookie JSON 即可。
+
+### 1）导出本机 Cookie
+```bash
+python examples/local_takeover_login.py --platform douyin --output ./douyin_cookie.json
+```
+可选平台：`douyin`、`xiaohongshu`、`weixin`、`kuaishou`。
+
+### 2）在网页导入 Cookie
+进入账号管理 -> 添加账号：
+- 填写平台和账号名称
+- 方式选择：本机浏览器接管（推荐）
+- 上传上一步导出的 `.json` 文件
+
+### 3）模式开关
+后端环境变量：
+- `LOGIN_EXECUTION_MODE=local`：默认走本机接管（推荐线上）
+- `LOGIN_EXECUTION_MODE=server`：使用原云端扫码流程

@@ -388,6 +388,23 @@
             :disabled="sseConnecting"
           />
         </el-form-item>
+
+        <el-form-item v-if="dialogType === 'add'" label="方式">
+          <el-radio-group v-model="addAccountMode" :disabled="sseConnecting">
+            <el-radio value="local">本机浏览器接管（推荐）</el-radio>
+            <el-radio value="server">云端扫码登录</el-radio>
+          </el-radio-group>
+        </el-form-item>
+
+        <div v-if="dialogType === 'add' && addAccountMode === 'local'" class="local-takeover-panel">
+          <p class="local-tip">
+            先在本机浏览器完成该平台登录并导出 Cookie JSON，再上传导入。
+          </p>
+          <div class="local-actions">
+            <el-button @click="selectLocalCookieFile">选择Cookie文件</el-button>
+            <span class="local-file-name">{{ localCookieFileName || '未选择文件' }}</span>
+          </div>
+        </div>
         
         <!-- 二维码显示区域 -->
         <div v-if="sseConnecting" class="qrcode-container">
@@ -438,10 +455,10 @@
           <el-button 
             type="primary" 
             @click="submitAccountForm" 
-            :loading="sseConnecting" 
-            :disabled="sseConnecting"
+            :loading="sseConnecting || localModeSubmitting" 
+            :disabled="sseConnecting || localModeSubmitting"
           >
-            {{ sseConnecting ? '请求中' : '确认' }}
+            {{ sseConnecting ? '请求中' : (dialogType === 'add' && addAccountMode === 'local' ? '上传并添加' : '确认') }}
           </el-button>
         </span>
       </template>
@@ -528,6 +545,20 @@ const validateAllAccountsInBackground = async () => {
   }, 0)
 }
 
+const loadLoginMode = async () => {
+  try {
+    const res = await accountApi.getLoginMode()
+    const mode = res?.data?.mode
+    if (mode === 'server') {
+      addAccountMode.value = 'server'
+    } else {
+      addAccountMode.value = 'local'
+    }
+  } catch (error) {
+    addAccountMode.value = 'local'
+  }
+}
+
 // 页面加载时获取账号数据
 onMounted(() => {
   // 快速获取账号列表（不验证），立即显示
@@ -537,6 +568,8 @@ onMounted(() => {
   setTimeout(() => {
     validateAllAccountsInBackground()
   }, 100) // 稍微延迟一下，让用户看到快速加载的效果
+
+  loadLoginMode()
 })
 
 // 获取平台标签类型
@@ -623,6 +656,11 @@ const rules = {
   name: [{ required: true, message: '请输入账号名称', trigger: 'blur' }]
 }
 
+const addAccountMode = ref('local')
+const localCookieFile = ref(null)
+const localCookieFileName = ref('')
+const localModeSubmitting = ref(false)
+
 // SSE连接状态
 const sseConnecting = ref(false)
 const qrCodeData = ref('')
@@ -646,7 +684,7 @@ const handleAddAccount = () => {
     platform: '',
     status: '正常'
   })
-  // 重置SSE状态
+  // 重置状态
   sseConnecting.value = false
   qrCodeData.value = ''
   loginStatus.value = ''
@@ -659,6 +697,9 @@ const handleAddAccount = () => {
   smsHint.value = ''
   smsSubmitting.value = false
   smsSendSubmitting.value = false
+  localCookieFile.value = null
+  localCookieFileName.value = ''
+  localModeSubmitting.value = false
   dialogVisible.value = true
 }
 
@@ -1087,11 +1128,83 @@ const submitSmsCode = async () => {
   }
 }
 
+const selectLocalCookieFile = () => {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.json'
+  input.style.display = 'none'
+  document.body.appendChild(input)
+
+  input.onchange = (event) => {
+    const file = event.target.files?.[0]
+    if (!file) {
+      document.body.removeChild(input)
+      return
+    }
+
+    if (!file.name.endsWith('.json')) {
+      ElMessage.error('请选择JSON格式的Cookie文件')
+      document.body.removeChild(input)
+      return
+    }
+
+    localCookieFile.value = file
+    localCookieFileName.value = file.name
+    document.body.removeChild(input)
+  }
+
+  input.click()
+}
+
+const submitLocalTakeoverAccount = async () => {
+  if (!localCookieFile.value) {
+    ElMessage.warning('请先选择Cookie JSON文件')
+    return
+  }
+
+  const platformTypeMap = {
+    '小红书': '1',
+    '视频号': '2',
+    '抖音': '3',
+    '快手': '4'
+  }
+
+  const type = platformTypeMap[accountForm.platform] || ''
+  if (!type) {
+    ElMessage.error('平台类型无效')
+    return
+  }
+
+  localModeSubmitting.value = true
+  try {
+    const formData = new FormData()
+    formData.append('file', localCookieFile.value)
+    formData.append('type', type)
+    formData.append('userName', accountForm.name)
+
+    await accountApi.uploadCookieDirect(formData)
+    ElMessage.success('本机Cookie导入成功')
+    dialogVisible.value = false
+    localCookieFile.value = null
+    localCookieFileName.value = ''
+    await fetchAccounts()
+  } catch (error) {
+    ElMessage.error(error?.message || '本机Cookie导入失败')
+  } finally {
+    localModeSubmitting.value = false
+  }
+}
+
 // 提交账号表单
 const submitAccountForm = () => {
   accountFormRef.value.validate(async (valid) => {
     if (valid) {
       if (dialogType.value === 'add') {
+        if (addAccountMode.value === 'local') {
+          await submitLocalTakeoverAccount()
+          return
+        }
+
         // 建立SSE连接
         connectSSE(accountForm.platform, accountForm.name)
       } else {
@@ -1214,6 +1327,34 @@ onBeforeUnmount(() => {
     &:hover {
       transform: scale(1.05);
       box-shadow: 0 0 8px rgba(0, 0, 0, 0.15);
+    }
+  }
+
+  .local-takeover-panel {
+    margin-top: 8px;
+    margin-bottom: 10px;
+    padding: 10px 12px;
+    border: 1px solid #e4e7ed;
+    border-radius: 8px;
+    background: #f8f9fb;
+
+    .local-tip {
+      margin: 0 0 10px;
+      font-size: 13px;
+      color: #606266;
+      line-height: 1.5;
+    }
+
+    .local-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .local-file-name {
+      font-size: 12px;
+      color: #909399;
+      word-break: break-all;
     }
   }
 

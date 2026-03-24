@@ -35,5 +35,15 @@ export const accountApi = {
   // 触发发送短信验证码
   triggerLoginSmsSend(data) {
     return http.post('/login/sms-send', data)
+  },
+
+  // 获取登录执行模式
+  getLoginMode() {
+    return http.get('/login/mode')
+  },
+
+  // 本机接管模式：直接上传Cookie并创建账号
+  uploadCookieDirect(formData) {
+    return http.upload('/uploadCookieDirect', formData)
   }
 }
