@@ -16,8 +16,40 @@ from myUtils.postVideo import post_video_tencent, post_video_DouYin, post_video_
 active_queues = {}
 app = Flask(__name__)
 
+DB_PATH = Path(BASE_DIR / "db" / "database.db")
+
+
+def ensure_runtime_storage_and_db():
+    Path(BASE_DIR / "db").mkdir(parents=True, exist_ok=True)
+    Path(BASE_DIR / "videoFile").mkdir(parents=True, exist_ok=True)
+    Path(BASE_DIR / "cookiesFile").mkdir(parents=True, exist_ok=True)
+
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_info (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type INTEGER NOT NULL,
+            filePath TEXT NOT NULL,
+            userName TEXT NOT NULL,
+            status INTEGER DEFAULT 0
+        )
+        ''')
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS file_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT NOT NULL,
+            filesize REAL,
+            upload_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+            file_path TEXT
+        )
+        ''')
+        conn.commit()
+
+
 #允许所有来源跨域访问
 CORS(app)
+ensure_runtime_storage_and_db()
 
 # 限制上传文件大小为160MB
 app.config['MAX_CONTENT_LENGTH'] = 160 * 1024 * 1024
@@ -716,4 +748,4 @@ def sse_stream(status_queue):
             time.sleep(0.1)
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0' ,port=5409)
+    app.run(host='0.0.0.0', port=int(os.getenv('PORT', '5409')))
