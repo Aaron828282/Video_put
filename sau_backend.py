@@ -437,10 +437,14 @@ def login():
         'sms_action_queue': sms_action_queue,
         'expecting_sms': False,
         'pending_sms_send': False,
+        'pending_sms_mode_switch': False,
+        'sms_mode_selected': False,
         'last_sms_submit_ts': 0,
         'last_sms_send_ts': 0,
         'last_sms_send_try_ts': 0,
         'last_sms_send_hint_ts': 0,
+        'last_sms_mode_try_ts': 0,
+        'last_sms_mode_hint_ts': 0,
         'sms_send_attempted': False,
         'active': True,
         'created_at': int(time.time())
@@ -507,19 +511,20 @@ def trigger_login_sms_send():
     if not session_context or not session_context.get('active'):
         return jsonify({"code": 500, "msg": "登录会话不存在或已结束", "data": None}), 200
 
-    session_context['pending_sms_send'] = True
+    session_context['pending_sms_mode_switch'] = True
+    session_context['pending_sms_send'] = False
     session_context['sms_action_queue'].put('send')
 
     if session_context.get('expecting_sms'):
-        message = "正在尝试点击发送验证码，请留意短信"
+        message = "正在尝试切换到短信验证码登录，短信将由平台自动下发"
     else:
-        message = "已记录发送请求，检测到抖音官方短信弹窗后会自动触发"
+        message = "已记录短信验证请求，检测到抖音官方弹窗后会自动切换为短信验证码登录"
 
     status_queue = session_context.get('status_queue')
     if status_queue is not None:
         status_queue.put(json.dumps({
             'type': 'status',
-            'stage': 'sms_send_requested',
+            'stage': 'sms_mode_requested',
             'message': message,
             'ts': int(time.time())
         }, ensure_ascii=False))

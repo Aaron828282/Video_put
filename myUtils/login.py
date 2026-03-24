@@ -64,6 +64,14 @@ SMS_HINT_KEYWORDS = [
     'otp'
 ]
 
+SMS_LOGIN_MODE_KEYWORDS = [
+    '短信验证码登录',
+    '手机验证码登录',
+    '验证码登录',
+    '短信登录',
+    '短信验证登录'
+]
+
 PHONE_MASK_PATTERNS = [
     r'1\d{2}\*{2,}\d{2,4}',
     r'\d{3}\*{2,}\d{2,4}'
@@ -191,6 +199,62 @@ async def _find_sms_input_target(context):
                     continue
 
     return None
+
+
+async def _switch_to_sms_login_mode(context, status_queue, emit_success=False):
+    pages = [candidate_page for candidate_page in context.pages if not candidate_page.is_closed()]
+
+    for candidate_page in reversed(pages):
+        frames = [candidate_page.main_frame] + [frame for frame in candidate_page.frames if frame != candidate_page.main_frame]
+
+        for frame in frames:
+            for keyword in SMS_LOGIN_MODE_KEYWORDS:
+                try:
+                    mode_button = frame.get_by_text(keyword, exact=False).first
+                    if await mode_button.count() <= 0 or not await mode_button.is_visible():
+                        continue
+                    await mode_button.scroll_into_view_if_needed()
+                    await mode_button.click(force=True, timeout=1200)
+                    if emit_success:
+                        _emit_event(status_queue, 'sms_mode_selected', message=f'已切换为“{keyword}”方式，等待短信自动下发')
+                    return True
+                except Exception:
+                    continue
+
+            try:
+                js_switch_result = await frame.evaluate(
+                    """
+                    (keywords) => {
+                      const isVisible = (el) => {
+                        const rect = el.getBoundingClientRect();
+                        const style = window.getComputedStyle(el);
+                        return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                      };
+
+                      const candidates = Array.from(document.querySelectorAll('button,[role="button"],a,div,span,label'));
+                      for (const keyword of keywords) {
+                        for (const element of candidates) {
+                          const text = (element.innerText || element.textContent || '').trim();
+                          if (!text || !text.includes(keyword)) continue;
+                          if (!isVisible(element)) continue;
+                          element.click();
+                          return { ok: true, text };
+                        }
+                      }
+                      return { ok: false, text: '' };
+                    }
+                    """,
+                    SMS_LOGIN_MODE_KEYWORDS
+                )
+                if js_switch_result and js_switch_result.get('ok'):
+                    if emit_success:
+                        click_text = js_switch_result.get('text') or '短信验证码登录'
+                        _emit_event(status_queue, 'sms_mode_selected', message=f'已切换为“{click_text}”方式，等待短信自动下发')
+                    return True
+            except Exception:
+                continue
+
+    return False
 
 
 async def _trigger_sms_send(context, status_queue, emit_fail=True):
@@ -326,11 +390,13 @@ async def _wait_and_submit_sms_code(context, status_queue, session_context, time
     wait_start = time.monotonic()
     last_progress = -1
 
-    session_context['pending_sms_send'] = True
+    session_context['pending_sms_mode_switch'] = True
+    session_context['pending_sms_send'] = False
 
     while (time.monotonic() - wait_start) < timeout:
         elapsed = int(time.monotonic() - wait_start)
         remain = max(0, timeout - elapsed)
+        now_ts = int(time.time())
 
         sms_action = ''
         sms_action_queue = session_context.get('sms_action_queue')
@@ -341,18 +407,20 @@ async def _wait_and_submit_sms_code(context, status_queue, session_context, time
                 sms_action = ''
 
         if sms_action in {'send', 'resend'}:
-            session_context['pending_sms_send'] = True
+            session_context['pending_sms_mode_switch'] = True
 
-        pending_sms_send = bool(session_context.get('pending_sms_send', False))
-        last_sms_send_try_ts = int(session_context.get('last_sms_send_try_ts', 0) or 0)
-        now_ts = int(time.time())
-        if pending_sms_send and (now_ts - last_sms_send_try_ts >= 2):
-            session_context['last_sms_send_try_ts'] = now_ts
-            emit_fail = elapsed % 8 == 0
-            if await _trigger_sms_send(context, status_queue, emit_fail=emit_fail):
-                session_context['pending_sms_send'] = False
-                session_context['sms_send_attempted'] = True
-                session_context['last_sms_send_ts'] = now_ts
+        pending_sms_mode_switch = bool(session_context.get('pending_sms_mode_switch', False))
+        last_sms_mode_try_ts = int(session_context.get('last_sms_mode_try_ts', 0) or 0)
+        if pending_sms_mode_switch and (now_ts - last_sms_mode_try_ts >= 2):
+            session_context['last_sms_mode_try_ts'] = now_ts
+            if await _switch_to_sms_login_mode(context, status_queue, emit_success=True):
+                session_context['pending_sms_mode_switch'] = False
+                session_context['sms_mode_selected'] = True
+            else:
+                last_sms_mode_hint_ts = int(session_context.get('last_sms_mode_hint_ts', 0) or 0)
+                if now_ts - last_sms_mode_hint_ts >= 6:
+                    session_context['last_sms_mode_hint_ts'] = now_ts
+                    _emit_status(status_queue, 'sms_mode_pending', '暂未检测到“短信验证码登录”选项，检测到后会自动点击')
 
         sms_code = ''
         try:
@@ -364,6 +432,7 @@ async def _wait_and_submit_sms_code(context, status_queue, session_context, time
             _emit_status(status_queue, 'sms_received', '已收到验证码，正在提交')
             if await _submit_sms_code(context, sms_code, status_queue):
                 session_context['expecting_sms'] = False
+                session_context['pending_sms_mode_switch'] = False
                 session_context['pending_sms_send'] = False
                 session_context['last_sms_submit_ts'] = int(time.time())
                 return True
@@ -373,11 +442,12 @@ async def _wait_and_submit_sms_code(context, status_queue, session_context, time
 
         if elapsed // 5 != last_progress // 5:
             last_progress = elapsed
-            _emit_status(status_queue, 'sms_waiting', '请先发送验证码，再输入短信验证码', remaining_seconds=remain)
+            _emit_status(status_queue, 'sms_waiting', '请先切换到短信验证码登录，再输入收到的验证码', remaining_seconds=remain)
 
         await asyncio.sleep(0.5)
 
     session_context['expecting_sms'] = False
+    session_context['pending_sms_mode_switch'] = False
     session_context['pending_sms_send'] = False
     _emit_result(status_queue, '500', '短信验证码输入超时，请重新发起登录')
     return False
@@ -398,6 +468,16 @@ async def _wait_for_login_signal(page, context, original_url, status_queue, qr_l
         now_ts = int(time.time())
 
         if session_context is not None:
+            if not bool(session_context.get('sms_mode_selected', False)):
+                has_popup = False
+                try:
+                    has_popup = len([p for p in context.pages if not p.is_closed()]) > 1
+                except Exception:
+                    has_popup = False
+
+                if qr_changed_at is not None or url_changed_detected_at is not None or has_popup:
+                    session_context['pending_sms_mode_switch'] = True
+
             sms_action_queue = session_context.get('sms_action_queue')
             sms_action = ''
             if sms_action_queue is not None:
@@ -407,28 +487,28 @@ async def _wait_for_login_signal(page, context, original_url, status_queue, qr_l
                     sms_action = ''
 
             if sms_action in {'send', 'resend'}:
-                session_context['pending_sms_send'] = True
-                _emit_status(status_queue, 'sms_send_requested', '已收到发送验证码请求，等待官方短信弹窗出现后自动触发')
+                session_context['pending_sms_mode_switch'] = True
+                _emit_status(status_queue, 'sms_mode_requested', '已收到短信验证请求，等待官方弹窗出现后自动切换到短信验证码登录')
 
-            pending_sms_send = bool(session_context.get('pending_sms_send', False))
-            last_sms_send_try_ts = int(session_context.get('last_sms_send_try_ts', 0) or 0)
-            if pending_sms_send and (now_ts - last_sms_send_try_ts >= 2):
-                session_context['last_sms_send_try_ts'] = now_ts
-                if await _trigger_sms_send(context, status_queue, emit_fail=False):
-                    session_context['pending_sms_send'] = False
-                    session_context['sms_send_attempted'] = True
+            pending_sms_mode_switch = bool(session_context.get('pending_sms_mode_switch', False))
+            last_sms_mode_try_ts = int(session_context.get('last_sms_mode_try_ts', 0) or 0)
+            if pending_sms_mode_switch and (now_ts - last_sms_mode_try_ts >= 2):
+                session_context['last_sms_mode_try_ts'] = now_ts
+                if await _switch_to_sms_login_mode(context, status_queue, emit_success=True):
+                    session_context['pending_sms_mode_switch'] = False
+                    session_context['sms_mode_selected'] = True
                     session_context['expecting_sms'] = True
                     session_context['last_sms_send_ts'] = now_ts
                 else:
-                    last_sms_send_hint_ts = int(session_context.get('last_sms_send_hint_ts', 0) or 0)
-                    if now_ts - last_sms_send_hint_ts >= 6:
-                        session_context['last_sms_send_hint_ts'] = now_ts
+                    last_sms_mode_hint_ts = int(session_context.get('last_sms_mode_hint_ts', 0) or 0)
+                    if now_ts - last_sms_mode_hint_ts >= 6:
+                        session_context['last_sms_mode_hint_ts'] = now_ts
                         try:
                             active_urls = [p.url or 'about:blank' for p in context.pages if not p.is_closed()]
                         except Exception:
                             active_urls = []
                         url_hint = ' | '.join(active_urls[:3]) if active_urls else '无可见页面URL'
-                        _emit_status(status_queue, 'sms_send_pending', f'暂未检测到官方短信弹窗按钮，检测到后会自动点击。当前页面: {url_hint}')
+                        _emit_status(status_queue, 'sms_mode_pending', f'暂未检测到“短信验证码登录”入口，检测到后会自动点击。当前页面: {url_hint}')
 
         try:
             for popup_page in context.pages[1:]:
@@ -445,15 +525,16 @@ async def _wait_for_login_signal(page, context, original_url, status_queue, qr_l
             if now_ts - last_sms_submit_ts >= 8:
                 session_context['expecting_sms'] = True
                 session_context['sms_send_attempted'] = False
-                session_context['pending_sms_send'] = True
+                session_context['pending_sms_mode_switch'] = False
+                session_context['sms_mode_selected'] = True
                 _emit_event(
                     status_queue,
                     'sms_required',
                     sessionId=session_context.get('session_id'),
-                    message='检测到短信验证，请先发送验证码，再输入短信验证码',
+                    message='检测到短信验证，请输入收到的短信验证码',
                     maskedPhone=sms_target.get('masked_phone', ''),
                     timeoutSeconds=180,
-                    canSendSms=True,
+                    canSendSms=False,
                     url=sms_target.get('url', '')
                 )
 
@@ -473,7 +554,10 @@ async def _wait_for_login_signal(page, context, original_url, status_queue, qr_l
                     _emit_status(status_queue, 'url_changed', '检测到主页面跳转，继续观察是否出现短信验证弹窗', url=current_url)
 
                 wait_after_url_change = int(time.monotonic() - url_changed_detected_at)
-                no_pending_sms = session_context is None or not bool(session_context.get('pending_sms_send', False))
+                no_pending_sms = session_context is None or (
+                    not bool(session_context.get('pending_sms_send', False))
+                    and not bool(session_context.get('pending_sms_mode_switch', False))
+                )
                 if wait_after_url_change >= 8 and sms_target is None and no_pending_sms:
                     _emit_status(status_queue, 'url_changed_finalize', '页面跳转稳定，开始校验登录态', url=current_url)
                     return 'url_changed'
@@ -492,7 +576,10 @@ async def _wait_for_login_signal(page, context, original_url, status_queue, qr_l
                     if post_scan_wait > 0 and post_scan_wait % 5 == 0:
                         _emit_status(status_queue, 'post_scan_waiting', '已检测到扫码动作，等待平台完成授权回写', waited_seconds=post_scan_wait)
                     if post_scan_wait >= 30:
-                        no_pending_sms = session_context is None or not bool(session_context.get('pending_sms_send', False))
+                        no_pending_sms = session_context is None or (
+                            not bool(session_context.get('pending_sms_send', False))
+                            and not bool(session_context.get('pending_sms_mode_switch', False))
+                        )
                         if sms_target is None and no_pending_sms:
                             _emit_status(status_queue, 'post_scan_wait_done', '扫码后等待完成，开始校验登录态')
                             return 'qr_changed'

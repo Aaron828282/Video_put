@@ -413,7 +413,7 @@
             <p class="sms-tip">{{ smsHint || '检测到短信验证，请输入手机收到的验证码' }}</p>
             <div class="sms-action-row">
               <el-button type="warning" plain :loading="smsSendSubmitting" @click="triggerSmsSend">
-                发送验证码
+                切换短信验证码登录
               </el-button>
               <el-input
                 v-model="smsCode"
@@ -944,9 +944,14 @@ const connectSSE = (platform, name) => {
       }
       smsRequired.value = true
       smsHint.value = payload.maskedPhone
-        ? `检测到短信验证，请先点击“发送验证码”，再输入发送到 ${payload.maskedPhone} 的验证码`
-        : '检测到短信验证，请先点击“发送验证码”，再输入手机收到的验证码'
-      appendStatusMessage(payload.message || '检测到短信验证，请先发送验证码再输入')
+        ? `检测到短信验证，请先切换到短信验证码登录，再输入发送到 ${payload.maskedPhone} 的验证码`
+        : '检测到短信验证，请先切换到短信验证码登录，再输入手机收到的验证码'
+      appendStatusMessage(payload.message || '检测到短信验证，请先切换短信验证码登录后再输入')
+      return
+    }
+
+    if (payload?.type === 'sms_mode_selected') {
+      appendStatusMessage(payload.message || '已切换为短信验证码登录，等待短信自动下发')
       return
     }
 
@@ -1030,7 +1035,7 @@ const connectSSE = (platform, name) => {
   }
 }
 
-// 触发发送短信验证码
+// 触发短信验证流程（优先切换到短信验证码登录）
 const triggerSmsSend = async () => {
   if (!currentLoginSessionId.value) {
     ElMessage.error('登录会话已失效，请重新发起登录')
@@ -1042,11 +1047,11 @@ const triggerSmsSend = async () => {
     const res = await accountApi.triggerLoginSmsSend({
       sessionId: currentLoginSessionId.value
     })
-    const tip = res?.msg || '已触发发送验证码，请查看手机短信'
+    const tip = res?.msg || '已触发短信验证流程，等待自动切换并下发短信'
     currentStatusText.value = tip
     statusMessages.value = [...statusMessages.value, tip].slice(-10)
   } catch (error) {
-    ElMessage.error(error?.message || '触发发送验证码失败，请重试')
+    ElMessage.error(error?.message || '触发短信验证流程失败，请重试')
   } finally {
     smsSendSubmitting.value = false
   }
