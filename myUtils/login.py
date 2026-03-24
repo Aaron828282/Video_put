@@ -192,40 +192,40 @@ async def _find_sms_input_target(context):
 
 
 async def _trigger_sms_send(context, status_queue):
-    target = await _find_sms_input_target(context)
-    if not target:
-        _emit_event(status_queue, 'sms_send_failed', message='未定位到短信验证页面，请稍后重试')
-        return False
+    pages = [candidate_page for candidate_page in context.pages if not candidate_page.is_closed()]
 
-    frame = target['frame']
+    for candidate_page in reversed(pages):
+        frames = [candidate_page.main_frame] + [frame for frame in candidate_page.frames if frame != candidate_page.main_frame]
 
-    for selector in SMS_SEND_SELECTORS:
-        try:
-            button = frame.locator(selector).first
-            if await button.count() <= 0 or not await button.is_visible():
-                continue
+        for frame in frames:
+            for selector in SMS_SEND_SELECTORS:
+                try:
+                    button = frame.locator(selector).first
+                    if await button.count() <= 0 or not await button.is_visible():
+                        continue
 
-            disabled = await button.get_attribute('disabled')
-            aria_disabled = await button.get_attribute('aria-disabled')
-            class_name = (await button.get_attribute('class') or '').lower()
-            if disabled is not None or aria_disabled in {'true', '1'} or 'disabled' in class_name:
-                _emit_event(status_queue, 'sms_send_cooldown', message='发送按钮暂不可用，请稍后重试')
-                return False
+                    disabled = await button.get_attribute('disabled')
+                    aria_disabled = await button.get_attribute('aria-disabled')
+                    class_name = (await button.get_attribute('class') or '').lower()
+                    if disabled is not None or aria_disabled in {'true', '1'} or 'disabled' in class_name:
+                        _emit_event(status_queue, 'sms_send_cooldown', message='发送按钮暂不可用，请稍后重试')
+                        return False
 
-            await button.click()
-            _emit_event(status_queue, 'sms_send_submitted', message='已点击发送验证码，请查看手机短信')
-            return True
-        except Exception:
-            continue
+                    await button.click()
+                    _emit_event(status_queue, 'sms_send_submitted', message='已点击发送验证码，请查看手机短信')
+                    return True
+                except Exception:
+                    continue
 
-    try:
-        fallback_button = frame.get_by_text('发送验证码', exact=False).first
-        if await fallback_button.count() > 0 and await fallback_button.is_visible():
-            await fallback_button.click()
-            _emit_event(status_queue, 'sms_send_submitted', message='已点击发送验证码，请查看手机短信')
-            return True
-    except Exception:
-        pass
+            for keyword in ['发送验证码', '获取验证码', '重新发送', '发送']:
+                try:
+                    fallback_button = frame.get_by_text(keyword, exact=False).first
+                    if await fallback_button.count() > 0 and await fallback_button.is_visible():
+                        await fallback_button.click()
+                        _emit_event(status_queue, 'sms_send_submitted', message='已点击发送验证码，请查看手机短信')
+                        return True
+                except Exception:
+                    continue
 
     _emit_event(status_queue, 'sms_send_failed', message='未找到发送验证码按钮，请重试或检查页面状态')
     return False

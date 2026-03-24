@@ -1039,11 +1039,12 @@ const triggerSmsSend = async () => {
 
   smsSendSubmitting.value = true
   try {
-    await accountApi.triggerLoginSmsSend({
+    const res = await accountApi.triggerLoginSmsSend({
       sessionId: currentLoginSessionId.value
     })
-    currentStatusText.value = '已触发发送验证码，请查看手机短信'
-    statusMessages.value = [...statusMessages.value, '已触发发送验证码，请查看手机短信'].slice(-10)
+    const tip = res?.msg || '已触发发送验证码，请查看手机短信'
+    currentStatusText.value = tip
+    statusMessages.value = [...statusMessages.value, tip].slice(-10)
   } catch (error) {
     ElMessage.error(error?.message || '触发发送验证码失败，请重试')
   } finally {

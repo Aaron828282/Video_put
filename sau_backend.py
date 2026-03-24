@@ -504,16 +504,19 @@ def trigger_login_sms_send():
     if not session_context or not session_context.get('active'):
         return jsonify({"code": 500, "msg": "登录会话不存在或已结束", "data": None}), 200
 
-    if not session_context.get('expecting_sms'):
-        return jsonify({"code": 500, "msg": "当前不在短信验证阶段", "data": None}), 200
-
     session_context['sms_action_queue'].put('send')
+
+    if session_context.get('expecting_sms'):
+        message = "已触发发送验证码，请留意短信"
+    else:
+        message = "已记录发送请求，检测到短信验证页面后会自动触发"
 
     return jsonify({
         "code": 200,
-        "msg": "已触发发送验证码，请留意短信",
+        "msg": message,
         "data": {
-            "sessionId": session_id
+            "sessionId": session_id,
+            "expectingSms": bool(session_context.get('expecting_sms', False))
         }
     }), 200
 
